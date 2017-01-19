@@ -3,6 +3,7 @@ package files_test
 import (
 	"bufio"
 	"database/sql"
+	"fmt"
 	"io/ioutil"
 	"testing"
 
@@ -32,6 +33,10 @@ var (
 	testServicesRunning bool
 )
 
+const (
+	DbName = "datauxtest"
+)
+
 var localconfig = &cloudstorage.CloudStoreContext{
 	LogggingContext: "unittest",
 	TokenSource:     cloudstorage.LocalFileSource,
@@ -58,7 +63,7 @@ func jobMaker(ctx *plan.Context) (*planner.ExecutorGrid, error) {
 	return planner.BuildSqlJob(ctx, testmysql.ServerCtx.Grid)
 }
 
-func RunTestServer(t *testing.T) {
+func RunTestServer(t testing.TB) {
 	if !testServicesRunning {
 		testServicesRunning = true
 		planner.GridConf.JobMaker = jobMaker
@@ -66,7 +71,8 @@ func RunTestServer(t *testing.T) {
 		planner.GridConf.SupressRecover = testmysql.Conf.SupressRecover
 		createTestData(t)
 		testmysql.RunTestServer(t)
-		planner.RunWorkerNodes(2, testmysql.ServerCtx.Reg)
+		quit := make(chan bool)
+		planner.RunWorkerNodes(quit, 2, testmysql.ServerCtx.Reg)
 	}
 }
 
@@ -107,9 +113,11 @@ func validateQuerySpec(t *testing.T, testSpec tu.QuerySpec) {
 	tu.ValidateQuerySpec(t, testSpec)
 }
 
-func createTestData(t *testing.T) {
+func createTestData(t testing.TB) {
 	store, err := createLocalStore()
-	assert.T(t, err == nil)
+	if err != nil {
+		t.Errorf("Could not create localstore %v", err)
+	}
 	//clearStore(t, store)
 	//defer clearStore(t, store)
 
@@ -118,9 +126,10 @@ func createTestData(t *testing.T) {
 	if err != nil {
 		return // already created
 	}
-	assert.T(t, err == nil)
 	f, err := obj.Open(cloudstorage.ReadWrite)
-	assert.T(t, err == nil)
+	if t != nil {
+		t.Errorf("Could not create article1.csv %v", err)
+	}
 
 	w := bufio.NewWriter(f)
 	w.WriteString(tu.Articles[0].Header())
@@ -134,7 +143,9 @@ func createTestData(t *testing.T) {
 	}
 	w.Flush()
 	err = obj.Close()
-	assert.T(t, err == nil)
+	if err != nil {
+		t.Errorf("Could not close obj %v", err)
+	}
 
 	obj, _ = store.NewObject("tables/user/user1.csv")
 	f, _ = obj.Open(cloudstorage.ReadWrite)
@@ -153,15 +164,23 @@ func createTestData(t *testing.T) {
 
 	//Read the object back out of the cloud storage.
 	obj2, err := store.Get("tables/article/article1.csv")
-	assert.T(t, err == nil)
+	if err != nil {
+		t.Errorf("Could not create article1.csv 2 %v", err)
+	}
 
 	f2, err := obj2.Open(cloudstorage.ReadOnly)
-	assert.T(t, err == nil)
+	if err != nil {
+		t.Errorf("Could not open %v", err)
+	}
 
 	bytes, err := ioutil.ReadAll(f2)
-	assert.T(t, err == nil)
+	if err != nil {
+		t.Errorf("Could not read all %v", err)
+	}
 
-	assert.Tf(t, tu.ArticleCsv == string(bytes), "Wanted equal got %s", bytes)
+	if tu.ArticleCsv != string(bytes) {
+		t.Errorf("Expected equal bytes for csv")
+	}
 }
 
 func TestShowTables(t *testing.T) {
@@ -172,7 +191,7 @@ func TestShowTables(t *testing.T) {
 	}{}
 	validateQuerySpec(t, tu.QuerySpec{
 		Sql:         "show tables;",
-		ExpectRowCt: -1,
+		ExpectRowCt: 3,
 		ValidateRowData: func() {
 			u.Infof("%v", data)
 			assert.Tf(t, data.Table != "", "%v", data)
@@ -239,5 +258,56 @@ func TestSimpleRowSelect(t *testing.T) {
 		},
 		RowData: &data,
 	})
-
 }
+
+type player struct {
+	PlayerId string
+	YearId   string
+	TeamId   string
+}
+
+// go test -bench="FileSqlWhere" --run="FileSqlWhere"
+//
+// go test -bench="FileSqlWhere" --run="FileSqlWhere" -cpuprofile cpu.out
+// go tool pprof files.test cpu.out
+func BenchmarkFileSqlWhere(b *testing.B) {
+
+	RunTestServer(b)
+	// This is a connection to RunTestServer, which starts on port 13307
+	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:13307)/%s?parseTime=true", DbName))
+	if err != nil {
+		b.Errorf("Could not create localstore %v", err)
+	}
+
+	sqlText := `SELECT layerID, yearID, teamID 
+	FROM appearances 
+	WHERE playerID = "barnero01" AND yearID = "1871";
+	`
+
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		u.Debugf("starting iter? %d", b.N)
+		rows, err := db.Query(sqlText)
+		if err != nil {
+			b.Errorf("Could not query %v", err)
+		}
+		players := make([]player, 0)
+		for rows.Next() {
+			var p player
+			rows.Scan(&p.PlayerId, &p.YearId, &p.TeamId)
+			players = append(players, p)
+		}
+		rows.Close()
+		if len(players) != 1 {
+			b.Errorf("Could not find players")
+		}
+	}
+}
+
+/*
+                                         356800349
+BenchmarkFileSqlWhere-4   	       1	1435390817 ns/op
+ok  	github.com/dataux/dataux/backends/files	1.453s
+
+*/

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	u "github.com/araddon/gou"
-	"github.com/bmizerany/assert"
 	"github.com/lytics/grid/natsunit"
 	"github.com/lytics/sereno/embeddedetcd"
 
@@ -157,10 +156,12 @@ nodes : [
 
 `
 
-func NewTestServerForDb(t *testing.T, db string) {
+func NewTestServerForDb(t testing.TB, db string) {
 	f := func() {
 
-		assert.Tf(t, Conf != nil, "must load config without err: %v", Conf)
+		if Conf == nil {
+			t.Fail()
+		}
 
 		EtcdCluster = embeddedetcd.TestClusterOf1()
 		EtcdCluster.Launch()
@@ -183,7 +184,10 @@ func NewTestServerForDb(t *testing.T, db string) {
 		//u.Infof("starting %q schema in test", db)
 
 		svr, err := proxy.NewServer(ServerCtx)
-		assert.T(t, err == nil, "must start without error ", err)
+
+		if err != nil {
+			t.Fail()
+		}
 
 		go svr.Run()
 
@@ -194,10 +198,10 @@ func NewTestServerForDb(t *testing.T, db string) {
 	testServerOnce.Do(f)
 }
 
-func NewTestServer(t *testing.T) {
+func NewTestServer(t testing.TB) {
 	NewTestServerForDb(t, "datauxtest")
 }
 
-func RunTestServer(t *testing.T) {
+func RunTestServer(t testing.TB) {
 	NewTestServer(t)
 }
